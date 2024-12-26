@@ -1,12 +1,16 @@
 package com.whh.findmusechatting.chat.service;
 
+import com.whh.findmusechatting.chat.dto.request.CreateChatMessageRequest;
+import com.whh.findmusechatting.chat.dto.request.CreateChatRoomRequest;
 import com.whh.findmusechatting.chat.dto.response.ChatRoomResponse;
-import com.whh.findmusechatting.chat.dto.request.ChatRoomUpdateRequest;
+import com.whh.findmusechatting.chat.dto.request.UpdateChatRoomRequest;
 import com.whh.findmusechatting.chat.entity.*;
 import com.whh.findmusechatting.chat.entity.constant.MessageType;
 import com.whh.findmusechatting.chat.entity.constant.NotificationType;
 import com.whh.findmusechatting.chat.repository.ChatMessageRepository;
 import com.whh.findmusechatting.chat.repository.ChatRoomRepository;
+import com.whh.findmusechatting.chat.repository.UserRoomStatusRepository;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -28,6 +32,7 @@ public class ChatRoomService {
     private final ChatRoomRepository chatRoomRepository;
     private final ChatMessageRepository messageRepository;
     private final ChatService chatService;
+    private final UserRoomStatusRepository userRoomStatusRepository;
 
     private final KafkaTemplate<String, ChatNotification> notificationKafkaTemplate;
     private final Map<String, Sinks.Many<ChatMessage>> messagesSinks;
@@ -36,16 +41,22 @@ public class ChatRoomService {
     private String notificationTopic;
 
     @Description("채팅방 생성")
-    public Mono<ChatRoom> createChatRoom(ChatRoom chatRoom) {
-        chatRoom.setCreatedAt(LocalDateTime.now());
+    public Mono<ChatRoom> createChatRoom(CreateChatRoomRequest request) {
+        ChatRoom chatRoom = ChatRoom.builder()
+            .name(request.name())
+            .ownerId(request.ownerId())
+            .artId(request.artId())
+            .thumbnail(request.thumbnail())
+            .createdAt(LocalDateTime.now())
+            .participants(List.of(Participant.getNewParticipant(request.ownerId())))
+            .build();
+        
         return chatRoomRepository.save(chatRoom)
-                .doOnSuccess(saved -> {
-                    messagesSinks.computeIfAbsent(saved.getId(),
-                            id -> Sinks.many().multicast().onBackpressureBuffer());
-                })
-                .doOnError(throwable -> {
-                    log.error("채팅방 생성 중 에러가 발생했습니다. : {}", throwable.getMessage());
-                });
+            .doOnSuccess(saved -> {
+                messagesSinks.computeIfAbsent(saved.getId(),
+                    id -> Sinks.many().multicast().onBackpressureBuffer());
+            })
+            .doOnError(throwable -> log.error("채팅방 생성 중 에러가 발생했습니다. : {}", throwable.getMessage()));
     }
 
     @Description("채팅방 참여")
@@ -58,21 +69,18 @@ public class ChatRoomService {
                     }
 
                     // 참여자 목록에 추가
-                    chatRoom.getParticipants().add(userId);
+                    chatRoom.getParticipants().add(Participant.getNewParticipant(userId));
 
                     // 시스템 메시지 생성
-                    ChatMessage systemMessage = ChatMessage.builder()
-                            .roomId(roomId)
-                            .senderId("SYSTEM")
-                            .senderName("SYSTEM")
-                            .content(userId + "님이 입장하셨습니다.")
-                            .timestamp(LocalDateTime.now())
-                            .messageType(MessageType.SYSTEM)
-                            .build();
+                    CreateChatMessageRequest request = CreateChatMessageRequest.builder()
+                        .roomId(roomId)
+                        .content(userId + "님이 입장했습니다.")
+                        .messageType(MessageType.SYSTEM)
+                        .build();
 
                     return chatRoomRepository.save(chatRoom)
                             .flatMap(savedRoom ->
-                                    chatService.sendMessage(systemMessage)
+                                    chatService.sendMessage(request)
                                             .thenReturn(savedRoom));
                 });
     }
@@ -86,11 +94,10 @@ public class ChatRoomService {
                             .findByRoomIdOrderByTimestampDesc(chatRoom.getId())
                             .next()
                             .defaultIfEmpty(ChatMessage.builder().build());
-
+                    
                     // 안 읽은 메시지 수 조회
-                    Mono<Long> unreadCountMono = messageRepository
-                            .countUnreadMessages(chatRoom.getId(), userId);
-
+                    Mono<Long> unreadCountMono = calculateUnreadCount(chatRoom.getId(), userId);
+                    
                     return Mono.zip(lastMessageMono, unreadCountMono)
                             .map(tuple -> {
                                 ChatMessage lastMessage = tuple.getT1();
@@ -109,9 +116,19 @@ public class ChatRoomService {
                             });
                 });
     }
+    
+    public Mono<Long> calculateUnreadCount(String roomId, String userId) {
+        return userRoomStatusRepository.findByUserIdAndRoomId(userId, roomId)
+            .flatMap(userRoomStatus -> {
+                LocalDateTime lastReadTimestamp = userRoomStatus.getLastReadTimestamp();
+                // lastReadTimestamp를 사용해 unread count 계산
+                return messageRepository.countUnreadMessages(roomId, lastReadTimestamp, userId);
+            })
+            .switchIfEmpty(Mono.just(0L));
+    }
 
     @Description("채팅방 수정")
-    public Mono<ChatRoom> updateChatRoom(String roomId, ChatRoomUpdateRequest request) {
+    public Mono<ChatRoom> updateChatRoom(String roomId, UpdateChatRoomRequest request) {
         return chatRoomRepository.findById(roomId)
                 .flatMap(chaRoom -> {
                     chaRoom.updateChatRoom(request);
@@ -124,27 +141,32 @@ public class ChatRoomService {
         return chatRoomRepository.findById(roomId)
                 .flatMap(chatRoom -> {
                     // 참여자가 아닌 경우
-                    if (!chatRoom.getParticipants().contains(userId)) {
+                    boolean isParticipant = chatRoom.getParticipants().stream()
+                        .anyMatch(participant -> participant.getId().equals(userId));
+                    
+                    if (!isParticipant) {
                         return Mono.error(new IllegalStateException("참여하지 않은 채팅방입니다."));
                     }
-
+                    
                     // 참여자 목록에서 제거
-                    chatRoom.getParticipants().remove(userId);
-
+                    chatRoom.getParticipants().removeIf(participant -> participant.getId().equals(userId));
+                    
                     // 시스템 메시지 생성
-                    ChatMessage systemMessage = ChatMessage.builder()
-                            .roomId(roomId)
-                            .senderId("SYSTEM")
-                            .senderName("SYSTEM")
-                            .content(userId + "님이 퇴장하셨습니다.")
-                            .timestamp(LocalDateTime.now())
-                            .messageType(MessageType.SYSTEM)
-                            .build();
-
-                    return chatRoomRepository.save(chatRoom)
+                    CreateChatMessageRequest request = CreateChatMessageRequest.builder()
+                        .roomId(roomId)
+                        .content(userId + "님이 퇴장하셨습니다.")
+                        .messageType(MessageType.SYSTEM)
+                        .build();
+                    
+                    if (chatRoom.getParticipants().isEmpty()) {
+                        return deleteChatRoom(chatRoom.getId(), chatRoom.getOwnerId())
+                            .then(Mono.empty());
+                    } else {
+                        return chatRoomRepository.save(chatRoom)
                             .flatMap(savedRoom ->
-                                    chatService.sendMessage(systemMessage)
-                                            .thenReturn(savedRoom));
+                                chatService.sendMessage(request)
+                                    .thenReturn(savedRoom));
+                    }
                 });
     }
 
@@ -153,7 +175,7 @@ public class ChatRoomService {
         return chatRoomRepository.findById(roomId)
                 .flatMap(chatRoom -> {
                     // 방장이 아닌 경우
-                    if (!chatRoom.getOwner().equals(userId)) {
+                    if (!chatRoom.getOwnerId().equals(userId)) {
                         return Mono.error(new IllegalStateException("방장만 채팅방을 삭제할 수 있습니다."));
                     }
 
@@ -172,10 +194,22 @@ public class ChatRoomService {
                                         .timestamp(LocalDateTime.now())
                                         .build();
 
-                                chatRoom.getParticipants().forEach(participantId ->
+                                chatRoom.getParticipants().forEach(participant ->
                                         notificationKafkaTemplate.send(notificationTopic,
-                                                participantId, deleteNotification));
+                                                participant.getId(), deleteNotification));
                             }));
+                });
+    }
+
+    @Description("채팅방 참여자 알림 설정")
+    public Mono<ChatRoom> updateNotificationSetting(String chatRoomId, String participantId, boolean enableNotification) {
+        return chatRoomRepository.findById(chatRoomId)
+                .flatMap(chatRoom -> {
+                    chatRoom.getParticipants().stream()
+                            .filter(participant -> participant.getId().equals(participantId))
+                            .findFirst()
+                            .ifPresent(participant -> participant.setNotificationEnabled(enableNotification));
+                    return chatRoomRepository.save(chatRoom);
                 });
     }
 }

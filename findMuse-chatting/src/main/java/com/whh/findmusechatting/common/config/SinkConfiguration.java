@@ -1,5 +1,6 @@
 package com.whh.findmusechatting.common.config;
 
+import com.whh.findmusechatting.chat.dto.response.ChatMessageResponse;
 import com.whh.findmusechatting.chat.entity.ChatMessage;
 import com.whh.findmusechatting.chat.entity.ChatNotification;
 import org.springframework.context.annotation.Bean;

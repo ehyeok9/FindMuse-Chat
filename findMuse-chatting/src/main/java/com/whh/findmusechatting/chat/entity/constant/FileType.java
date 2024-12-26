@@ -1,9 +1,8 @@
 package com.whh.findmusechatting.chat.entity.constant;
 
-
-public enum MessageType {
-    CHAT,
-    SYSTEM,
+public enum FileType {
     IMAGE,
-    APPOINTMENT
+    VIDEO,
+    DOCUMENT,
+    OTHER
 }

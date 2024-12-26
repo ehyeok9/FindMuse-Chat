@@ -1,6 +1,6 @@
 package com.whh.findmusechatting.chat.entity;
 
-import com.whh.findmusechatting.chat.dto.request.ChatRoomUpdateRequest;
+import com.whh.findmusechatting.chat.dto.request.UpdateChatRoomRequest;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -10,6 +10,7 @@ import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import org.springframework.data.mongodb.core.mapping.Field;
 
 @Data
 @Builder
@@ -20,17 +21,20 @@ public class ChatRoom {
     @Id
     private String id;
     private String name;
-    private String owner;
+    private String ownerId;
+    private String artId;
     private String thumbnail;
-    private List<String> participants;
+    
+    @Field("participants")
+    private List<Participant> participants;
     private LocalDateTime createdAt;
 
-    public void updateChatRoom(ChatRoomUpdateRequest chatRoomUpdateRequest) {
-        if (chatRoomUpdateRequest.getName() != null) {
-            this.name = chatRoomUpdateRequest.getName();
+    public void updateChatRoom(UpdateChatRoomRequest updateChatRoomRequest) {
+        if (updateChatRoomRequest.name() != null) {
+            this.name = updateChatRoomRequest.name();
         }
-        if (chatRoomUpdateRequest.getThumbnail() != null) {
-            this.thumbnail = chatRoomUpdateRequest.getThumbnail();
+        if (updateChatRoomRequest.thumbnail() != null) {
+            this.thumbnail = updateChatRoomRequest.thumbnail();
         }
     }
 }

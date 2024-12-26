@@ -13,6 +13,11 @@ spring:
     mongodb:
         uri: ${MONGODB_URI}
 
+  r2dbc:
+    url: r2dbc:mysql://${RDS_ENDPOINT}:${RDS_PORT}/${RDS_DB_NAME}?allowPublicKeyRetrieval=true&useSSL=false
+    username: ${RDS_USERNAME}
+    password: ${RDS_PASSWORD}
+
   rsocket:
     server:
       port: 6565
@@ -31,6 +36,14 @@ spring:
     topic:
       message: chat.messages
       notification: chat.notifications
+
+aws:
+  s3:
+    access-key: ${AWS_ACCESS_KEY}
+    secret-key: ${AWS_SECRET_KEY}
+    region: ${AWS_REGION}
+    bucket-name: ${S3_BUCKET_NAME}
+
 
 logging:
   level:
